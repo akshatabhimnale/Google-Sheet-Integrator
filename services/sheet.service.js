@@ -7,7 +7,7 @@ const auth = new google.auth.GoogleAuth({
 });
 
 const SPREADSHEET_ID = '1vlk913CO1sn6cny2UuLwS88nfkPS4t5aWttTQGR5uYU';
-const RANGE = 'Sheet1!A1:AE';
+const RANGE = "Jun'25!A1:AG";
 
 async function getSheetData() {
   const client = await auth.getClient();
