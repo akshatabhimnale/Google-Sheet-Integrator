@@ -1,10 +1,29 @@
 // server.js
 
 const http = require('http');
+const fs = require('fs');
 const app = require('./app');
+const path = './service-account.json';
 const { Server } = require('socket.io');
 const mongoose = require('mongoose');
 const { syncSheetToDatabase } = require('./controllers/sheet.controller');
+
+// 🔐 Handle service account file from base64 env variable
+if (!fs.existsSync(path)) {
+  const serviceAccountBase64 = process.env.GOOGLE_SERVICE_ACCOUNT;
+  if (!serviceAccountBase64) {
+    console.error('❌ Missing GOOGLE_SERVICE_ACCOUNT environment variable.');
+    process.exit(1);
+  }
+  try {
+    const jsonContent = Buffer.from(serviceAccountBase64, 'base64').toString('utf8');
+    fs.writeFileSync(path, jsonContent);
+    console.log('✅ service-account.json created from base64 string.');
+  } catch (err) {
+    console.error('❌ Failed to create service-account.json:', err.message);
+    process.exit(1);
+  }
+}
 
 const server = http.createServer(app);
 const io = new Server(server, {
