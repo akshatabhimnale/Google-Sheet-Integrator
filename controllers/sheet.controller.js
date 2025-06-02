@@ -94,8 +94,55 @@ async function filterByDateRange(req, res) {
   }
 }
 
+
+/**
+ * API to return counts for simplified status categories.
+ * Maps statuses as follows:
+ * - "Completed", "Internally Completed" → "Completed"
+ * - "Flagged", "Paused" → "Paused"
+ * - "Live" → "Live"
+ * - "Not Live", "TBC" → "Not Live"
+ */
+async function getStatusSummary(req, res) {
+  try {
+    const db = mongoose.connection.db;
+    const collection = db.collection('sheetdata');
+    const allData = await collection.find({}).toArray();
+
+    const statusMap = {
+      Completed: ['Completed', 'Internally Completed'],
+      Paused: ['Flagged', 'Paused'],
+      Live: ['Live'],
+      'Not Live': ['Not Live', 'TBC']
+    };
+
+    const summary = {
+      Completed: 0,
+      Paused: 0,
+      Live: 0,
+      'Not Live': 0
+    };
+
+    for (const row of allData) {
+      const status = (row.Status || '').trim(); // Ensure fallback if undefined
+      for (const [key, values] of Object.entries(statusMap)) {
+        if (values.includes(status)) {
+          summary[key]++;
+          break;
+        }
+      }
+    }
+
+    res.json(summary);
+  } catch (err) {
+    console.error('❌ getStatusSummary error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   syncSheetToDatabase,
   testConnection,
-  filterByDateRange
+  filterByDateRange,
+  getStatusSummary
 };

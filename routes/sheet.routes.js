@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { testConnection } = require('../controllers/sheet.controller');
+const { testConnection , getStatusSummary } = require('../controllers/sheet.controller');
 
 router.get('/test', testConnection);
+router.get('/status-summary', getStatusSummary);
 
 module.exports = router;
