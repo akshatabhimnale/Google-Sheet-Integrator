@@ -28,11 +28,24 @@ if (!fs.existsSync(path)) {
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: 'http://localhost:3000',
+    origin: [
+      'http://localhost:3000',
+      'https://localhost:3000',
+      'http://127.0.0.1:3000',
+      'https://127.0.0.1:3000',
+      'https://crm-frontend-yourdomain.com' // Replace with your actual frontend domain
+    ],
     methods: ['GET', 'POST'],
     credentials: true
-  }
+  },
+  transports: ['websocket', 'polling'],
+  allowEIO3: true,
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
+
+// Make socket.io instance available to the app/routes
+app.set('io', io);
 
 // 🔁 Cache the last emitted sheet data
 let latestData = [];
@@ -45,6 +58,23 @@ mongoose.connection.once('open', async () => {
 
   io.on('connection', async (socket) => {
     console.log('📡 Client connected via WebSocket:', socket.id);
+    console.log('🌐 Client origin:', socket.handshake.headers.origin);
+    console.log('🚀 Transport used:', socket.conn.transport.name);
+
+    // Handle transport upgrade
+    socket.conn.on('upgrade', () => {
+      console.log('⬆️ Upgraded to', socket.conn.transport.name);
+    });
+
+    // Handle connection errors
+    socket.on('error', (error) => {
+      console.error('❌ Socket error for client', socket.id, ':', error.message);
+    });
+
+    // Handle disconnection
+    socket.on('disconnect', (reason) => {
+      console.log('📡 Client disconnected:', socket.id, 'Reason:', reason);
+    });
 
     try {
       if (latestData.length > 0) {
@@ -60,6 +90,7 @@ mongoose.connection.once('open', async () => {
       }
     } catch (error) {
       console.error('❌ Error sending data to client:', error.message);
+      socket.emit('error', { message: 'Failed to fetch data' });
     }
   });
 
@@ -78,5 +109,14 @@ mongoose.connection.once('open', async () => {
 
   server.listen(5000, () => {
     console.log('🚀 Server running at http://localhost:5000');
+  }).on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error('❌ Port 5000 is already in use. Please stop other Node.js processes and try again.');
+      console.log('💡 Try running: taskkill /f /im node.exe (Windows) or killall node (Mac/Linux)');
+      process.exit(1);
+    } else {
+      console.error('❌ Server error:', err.message);
+      process.exit(1);
+    }
   });
 });

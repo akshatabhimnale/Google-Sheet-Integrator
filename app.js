@@ -8,7 +8,13 @@ const app = express();
 
 // CORS for Express routes (important for REST APIs)
 app.use(cors({
-  origin: 'http://localhost:3000',
+  origin: [
+    'http://localhost:3000',
+    'https://localhost:3000',
+    'http://127.0.0.1:3000',
+    'https://127.0.0.1:3000',
+    'https://crm-frontend-yourdomain.com' // Replace with your actual frontend domain
+  ],
   credentials: true
 }));
 
@@ -18,6 +24,6 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB connected'))
   .catch(err => console.error('❌ MongoDB connection failed:', err.message));
 
-app.use('/', sheetRoutes);
+app.use('/api/sheets', sheetRoutes);
 
 module.exports = app;

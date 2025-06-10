@@ -57,6 +57,31 @@ async function syncSheetToDatabase(io = null) {
 }
 
 /**
+ * API to get all sheet data for the dashboard
+ */
+async function getAllSheetData(req, res) {
+  try {
+    const db = mongoose.connection.db;
+    const collection = db.collection('sheetdata');
+    
+    const allData = await collection.find({}).toArray();
+    
+    // Convert Date objects back to strings for frontend compatibility
+    const formattedData = allData.map(row => ({
+      ...row,
+      'Start Date': row['Start Date'] ? row['Start Date'].toISOString().split('T')[0] : null,
+      'Deadline': row['Deadline'] ? row['Deadline'].toISOString().split('T')[0] : null,
+    }));
+    
+    console.log(`📊 Returning ${formattedData.length} rows to dashboard`);
+    res.json(formattedData);
+  } catch (err) {
+    console.error('❌ getAllSheetData error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
  * API to confirm backend is running.
  */
 function testConnection(req, res) {
@@ -140,9 +165,85 @@ async function getStatusSummary(req, res) {
   }
 }
 
+/**
+ * Get all updates for a specific campaign
+ */
+async function getCampaignUpdates(req, res) {
+  const { campaignId } = req.params;
+
+  if (!campaignId) {
+    return res.status(400).json({ error: 'Campaign ID is required' });
+  }
+
+  try {
+    const db = mongoose.connection.db;
+    const updatesCollection = db.collection('campaignupdates');
+
+    const updates = await updatesCollection
+      .find({ campaignId: campaignId })
+      .sort({ timestamp: -1 })
+      .toArray();
+
+    res.json(updates);
+  } catch (err) {
+    console.error('❌ getCampaignUpdates error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * Add a new update for a campaign
+ */
+async function addCampaignUpdate(req, res) {
+  const { campaignId } = req.params;
+  const { message, userId, userName } = req.body;
+
+  if (!campaignId || !message || !userId || !userName) {
+    return res.status(400).json({ 
+      error: 'Campaign ID, message, user ID, and user name are required' 
+    });
+  }
+
+  try {
+    const db = mongoose.connection.db;
+    const updatesCollection = db.collection('campaignupdates');
+
+    const newUpdate = {
+      campaignId: campaignId,
+      message: message.trim(),
+      userId: userId,
+      userName: userName,
+      timestamp: new Date(),
+      _id: new mongoose.Types.ObjectId()
+    };
+
+    await updatesCollection.insertOne(newUpdate);
+
+    // Emit the new update to all connected clients for real-time updates
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('campaignUpdateAdded', {
+        campaignId: campaignId,
+        update: newUpdate
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      update: newUpdate
+    });
+  } catch (err) {
+    console.error('❌ addCampaignUpdate error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   syncSheetToDatabase,
   testConnection,
   filterByDateRange,
-  getStatusSummary
+  getStatusSummary,
+  getCampaignUpdates,
+  addCampaignUpdate,
+  getAllSheetData
 };
