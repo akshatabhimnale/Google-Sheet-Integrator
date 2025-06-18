@@ -1,122 +1,116 @@
 // server.js
 
-const http = require('http');
-const fs = require('fs');
-const app = require('./app');
-const path = './service-account.json';
-const { Server } = require('socket.io');
+require('dotenv').config();
+const express = require('express');
 const mongoose = require('mongoose');
+const cors = require('cors');
+const http = require('http');
+const socketIo = require('socket.io');
+const sheetRoutes = require('./routes/sheet.routes');
 const { syncSheetToDatabase } = require('./controllers/sheet.controller');
 
-// 🔐 Handle service account file from base64 env variable
-if (!fs.existsSync(path)) {
-  const serviceAccountBase64 = process.env.GOOGLE_SERVICE_ACCOUNT;
-  if (!serviceAccountBase64) {
-    console.error('❌ Missing GOOGLE_SERVICE_ACCOUNT environment variable.');
-    process.exit(1);
-  }
-  try {
-    const jsonContent = Buffer.from(serviceAccountBase64, 'base64').toString('utf8');
-    fs.writeFileSync(path, jsonContent);
-    console.log('✅ service-account.json created from base64 string.');
-  } catch (err) {
-    console.error('❌ Failed to create service-account.json:', err.message);
-    process.exit(1);
-  }
-}
-
+const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
+const io = socketIo(server, {
   cors: {
-    origin: [
-      'http://localhost:3000',
-      'https://localhost:3000',
-      'http://127.0.0.1:3000',
-      'https://127.0.0.1:3000',
-      'https://crm-frontend-yourdomain.com' // Replace with your actual frontend domain
-    ],
-    methods: ['GET', 'POST'],
+    origin: "http://localhost:3000",
+    methods: ["GET", "POST"],
     credentials: true
-  },
-  transports: ['websocket', 'polling'],
-  allowEIO3: true,
-  pingTimeout: 60000,
-  pingInterval: 25000
+  }
 });
 
-// Make socket.io instance available to the app/routes
-app.set('io', io);
+// Middleware
+app.use(cors({
+  origin: 'http://localhost:3000',
+  credentials: true
+}));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// 🔁 Cache the last emitted sheet data
-let latestData = [];
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Global error handler:', err);
+  res.status(500).json({
+    error: 'Internal server error',
+    message: err.message
+  });
+});
 
-mongoose.connection.once('open', async () => {
-  console.log('✅ MongoDB connection is now open.');
+// Routes
+app.use('/api/sheets', sheetRoutes);
 
-  // 🔄 Initial sync at startup
-  latestData = await syncSheetToDatabase(io); // Emits and returns updated data
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+  console.log('New client connected');
+  socket.on('disconnect', () => {
+    console.log('Client disconnected');
+  });
+});
 
-  io.on('connection', async (socket) => {
-    console.log('📡 Client connected via WebSocket:', socket.id);
-    console.log('🌐 Client origin:', socket.handshake.headers.origin);
-    console.log('🚀 Transport used:', socket.conn.transport.name);
+// MongoDB connection options
+const mongooseOptions = {
+  serverSelectionTimeoutMS: 30000,
+  socketTimeoutMS: 45000,
+  family: 4,
+  maxPoolSize: 10,
+  minPoolSize: 5,
+  retryWrites: true,
+  retryReads: true
+};
 
-    // Handle transport upgrade
-    socket.conn.on('upgrade', () => {
-      console.log('⬆️ Upgraded to', socket.conn.transport.name);
-    });
-
-    // Handle connection errors
-    socket.on('error', (error) => {
-      console.error('❌ Socket error for client', socket.id, ':', error.message);
-    });
-
-    // Handle disconnection
-    socket.on('disconnect', (reason) => {
-      console.log('📡 Client disconnected:', socket.id, 'Reason:', reason);
-    });
-
+// MongoDB connection with retry logic
+const connectWithRetry = async () => {
+  const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://brianrolf:1lAP1iFaIU8AcHK4@interlink.pdcubpd.mongodb.net/?retryWrites=true&w=majority&appName=Interlink';
+  
+  try {
+    await mongoose.connect(MONGODB_URI, mongooseOptions);
+    console.log('✅ Connected to MongoDB Atlas');
+    
     try {
-      if (latestData.length > 0) {
-        console.log(`📤 Sending cached data to client: ${latestData.length} rows`);
-        socket.emit('sheetDataUpdated', latestData);
-      } else {
-        const db = mongoose.connection.db;
-        const collection = db.collection('sheetdata');
-        const data = await collection.find({}).toArray();
-        latestData = data;
-        console.log(`📤 Sending DB data to client: ${data.length} rows`);
-        socket.emit('sheetDataUpdated', data);
-      }
+      const result = await syncSheetToDatabase(io);
+      console.log('✅ Initial data sync completed:', result.message);
     } catch (error) {
-      console.error('❌ Error sending data to client:', error.message);
-      socket.emit('error', { message: 'Failed to fetch data' });
+      console.error('❌ Error during initial data sync:', error);
     }
-  });
+  } catch (err) {
+    console.error('❌ MongoDB connection error:', err);
+    console.log('🔄 Retrying connection in 5 seconds...');
+    setTimeout(connectWithRetry, 5000);
+  }
+};
 
-  // 🔁 Sync every 60s
-  setInterval(async () => {
-    try {
-      const updated = await syncSheetToDatabase(io); // emits if changed
-      if (updated.length > 0) {
-        latestData = updated;
-        console.log(`🔁 Updated and emitted ${updated.length} rows`);
-      }
-    } catch (err) {
-      console.error('❌ Sync error:', err.message);
-    }
-  }, 60000);
+// Start server only after MongoDB connection is established
+const startServer = async () => {
+  try {
+    await connectWithRetry();
+    
+    const PORT = process.env.PORT || 5000;
+    server.listen(PORT, () => {
+      console.log(`✅ Server running on port ${PORT}`);
+    });
 
-  server.listen(5000, () => {
-    console.log('🚀 Server running at http://localhost:5000');
-  }).on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error('❌ Port 5000 is already in use. Please stop other Node.js processes and try again.');
-      console.log('💡 Try running: taskkill /f /im node.exe (Windows) or killall node (Mac/Linux)');
-      process.exit(1);
-    } else {
-      console.error('❌ Server error:', err.message);
-      process.exit(1);
-    }
-  });
+    // Initial sync on server start
+    await syncSheetToDatabase(io);
+
+    // Poll every 5 seconds for live sync
+    setInterval(() => {
+      syncSheetToDatabase(io).catch(err => console.error('Live sync error:', err));
+    }, 5000);
+  } catch (error) {
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+// Handle MongoDB connection errors
+mongoose.connection.on('error', (err) => {
+  console.error('❌ MongoDB connection error:', err);
 });
+
+mongoose.connection.on('disconnected', () => {
+  console.log('⚠️ MongoDB disconnected. Attempting to reconnect...');
+  connectWithRetry();
+});
+
+// Start the server
+startServer();

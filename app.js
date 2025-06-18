@@ -6,6 +6,7 @@ const path = require('path');
 const sheetRoutes = require('./routes/sheet.routes');
 const authRoutes = require('./routes/auth.routes');
 const campaignUpdatesRoutes = require('./routes/campaignUpdates.routes');
+const LeadReport = require('../models/LeadReport');
 
 const app = express();
 
@@ -14,9 +15,14 @@ app.use(cors({
   origin: [
     'http://localhost:3000',
     'https://localhost:3000',
+    'http://localhost:3001',
+    'http://localhost:3001/login',
+    'https://localhost:3001',
     'http://127.0.0.1:3000',
     'https://127.0.0.1:3000',
-    'https://crm-frontend-yourdomain.com' // Replace with your actual frontend domain
+    'http://10.27.76.197:3001',
+    'https://crm-frontend-yourdomain.com',
+    //  // Replace with your actual frontend domain
   ],
   credentials: true
 }));
