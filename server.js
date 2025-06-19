@@ -42,7 +42,7 @@ app.use((err, req, res, next) => {
 
 // Routes
 app.use("/api/auth", authRoutes);
-app.use("/api/sheet", sheetRoutes);
+app.use("/api/sheets", sheetRoutes);
 app.use("/api/leads", leadRoutes);
 
 // Socket.IO connection handling
