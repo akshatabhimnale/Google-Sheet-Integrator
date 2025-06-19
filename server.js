@@ -8,6 +8,8 @@ const http = require('http');
 const socketIo = require('socket.io');
 const sheetRoutes = require('./routes/sheet.routes');
 const { syncSheetToDatabase } = require('./controllers/sheet.controller');
+const authRoutes = require('./routes/auth.routes');
+const leadRoutes = require('./routes/lead.routes');
 
 const app = express();
 const server = http.createServer(app);
@@ -37,7 +39,9 @@ app.use((err, req, res, next) => {
 });
 
 // Routes
-app.use('/api/sheets', sheetRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/sheet', sheetRoutes);
+app.use('/api/leads', leadRoutes);
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {

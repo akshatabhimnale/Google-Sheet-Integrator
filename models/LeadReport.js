@@ -1,13 +1,32 @@
 const mongoose = require('mongoose');
 
-const LeadReportSchema = new mongoose.Schema({
-  itlCode: String,
-  date: Date,
-  acceptedCount: Number,
-  rejectedCount: Number,
-  acceptedLeadIds: [String],
-  rejectedLeadIds: [String],
-  lastUpdated: Date
-}, { collection: 'lead_reports' });
+const leadReportSchema = new mongoose.Schema({
+  itl: {
+    type: String,
+    required: true,
+    index: true
+  },
+  status: {
+    type: String,
+    enum: ['pending', 'accepted', 'rejected'],
+    default: 'pending'
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now
+  }
+});
 
-module.exports = mongoose.model('LeadReport', LeadReportSchema); 
+// Update the updatedAt timestamp before saving
+leadReportSchema.pre('save', function(next) {
+  this.updatedAt = new Date();
+  next();
+});
+
+const LeadReport = mongoose.model('LeadReport', leadReportSchema);
+
+module.exports = LeadReport; 

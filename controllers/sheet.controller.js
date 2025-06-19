@@ -517,12 +517,12 @@ async function getAllSheetData(req, res) {
     } else {
       allData = await collection.find({}).toArray();
     }
-
+    
     // Filter out entries without ITL code
     const validData = allData.filter(row => 
       row['ITL'] && row['ITL'].toString().trim() !== ''
     );
-
+    
     // Convert Date objects back to strings for frontend compatibility
     const formattedData = validData.map(row => ({
       ...row,
@@ -537,7 +537,7 @@ async function getAllSheetData(req, res) {
             : new Date(row['Deadline']).toISOString().split('T')[0])
         : null,
     }));
-
+    
     console.log(`📊 Returning ${formattedData.length} valid rows (with ITL) from ${allData.length} total rows`);
     res.json({ data: formattedData });
   } catch (err) {

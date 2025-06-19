@@ -6,6 +6,7 @@ const path = require('path');
 const sheetRoutes = require('./routes/sheet.routes');
 const authRoutes = require('./routes/auth.routes');
 const campaignUpdatesRoutes = require('./routes/campaignUpdates.routes');
+const leadRoutes = require('./routes/lead.routes');
 const LeadReport = require('../models/LeadReport');
 
 const app = express();
@@ -40,5 +41,6 @@ mongoose.connect(process.env.MONGO_URI)
 app.use('/api/sheets', sheetRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/campaigns', campaignUpdatesRoutes);
+app.use('/api/leads', leadRoutes);
 
 module.exports = app;
