@@ -1,0 +1,5 @@
+---
+deployment:
+  tasks:
+    - export DEPLOYPATH=/home/vidxamwm/Google-Sheet-Integrator/server
+    - /bin/cp -R * $DEPLOYPATH
