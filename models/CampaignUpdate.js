@@ -13,8 +13,9 @@ const campaignUpdateSchema = new mongoose.Schema({
   },
   message: {
     type: String,
-    required: true,
-    trim: true
+    required: false,
+    trim: true,
+    default: ''
   },
   attachments: [{
     filename: String,
@@ -39,4 +40,4 @@ const campaignUpdateSchema = new mongoose.Schema({
 // Index for efficient querying
 campaignUpdateSchema.index({ campaignId: 1, timestamp: -1 });
 
-module.exports = mongoose.model('CampaignUpdate', campaignUpdateSchema); 
+module.exports = mongoose.model('CampaignUpdates', campaignUpdateSchema); 

@@ -46,17 +46,18 @@ const upload = multer({
   storage: storage,
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB limit
+    files: 1000
   },
   fileFilter: (req, file, cb) => {
-    // Allow images, PDFs, documents
-    const allowedTypes = /jpeg|jpg|png|gif|webp|pdf|doc|docx|txt|xlsx|xls|ppt|pptx/;
+    // Allow images, PDFs, documents, Excel, CSV, and ZIP files
+    const allowedTypes = /jpeg|jpg|png|gif|webp|bmp|svg|pdf|doc|docx|txt|xlsx|xls|csv|zip|ppt|pptx/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
     const mimetype = allowedTypes.test(file.mimetype);
 
     if (mimetype && extname) {
       return cb(null, true);
     } else {
-      cb(new Error('Only images, PDFs, and documents are allowed'));
+      cb(new Error('Only images, PDFs, documents, Excel, CSV, and ZIP files are allowed'));
     }
   }
 });
@@ -96,9 +97,16 @@ const getCampaignUpdates = async (req, res) => {
 // Create new campaign update
 const createCampaignUpdate = async (req, res) => {
   try {
+    console.log('Creating campaign update...');
+    console.log('Request body:', req.body);
+    console.log('Request files:', req.files);
+    console.log('Request params:', req.params);
+    
     const { campaignId } = req.params;
-    const { message } = req.body;
-    const userId = req.userId; // From auth middleware
+    const { message, userId, userName } = req.body;
+    
+    // Use authenticated user ID if available, otherwise use provided user info
+    const currentUserId = req.userId || userId;
 
     if (!campaignId) {
       return res.status(400).json({
@@ -107,11 +115,33 @@ const createCampaignUpdate = async (req, res) => {
       });
     }
 
-    if (!message || message.trim().length === 0) {
+    // Allow updates with only attachments (no message required)
+    const hasMessage = message && message.trim().length > 0;
+    const hasAttachments = req.files && req.files.length > 0;
+    
+    console.log('Has message:', hasMessage);
+    console.log('Has attachments:', hasAttachments);
+    
+    if (!hasMessage && !hasAttachments) {
       return res.status(400).json({
         success: false,
-        message: 'Message is required'
+        message: 'Either a message or attachments are required'
       });
+    }
+
+    // If no authenticated user, create a default user or use provided info
+    let finalUserId = currentUserId;
+    if (!finalUserId) {
+      // Create a default user for demo purposes
+      const defaultUser = await User.findOne({ role: 'Admin' }) || await User.findOne();
+      if (defaultUser) {
+        finalUserId = defaultUser._id;
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: 'User authentication required'
+        });
+      }
     }
 
     // Process attachments if any
@@ -131,8 +161,8 @@ const createCampaignUpdate = async (req, res) => {
     // Create new update
     const update = new CampaignUpdate({
       campaignId,
-      userId,
-      message: message.trim(),
+      userId: finalUserId,
+      message: hasMessage ? message.trim() : '',
       attachments
     });
 

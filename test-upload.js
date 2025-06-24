@@ -22,12 +22,13 @@ const upload = multer({
     }
   },
   limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB
+    fileSize: 10 * 1024 * 1024, // 10MB
+    files: 1000
   }
 });
 
 // Test upload endpoint
-app.post('/test-upload', upload.single('file'), (req, res) => {
+app.post('/test-upload',upload.array('files', 1000), (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });

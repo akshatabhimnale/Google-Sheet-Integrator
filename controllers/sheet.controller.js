@@ -8,12 +8,17 @@ const LeadReport = require('../models/LeadReport');
 // Configure multer for file upload
 const storage = multer.memoryStorage();
 const fileFilter = (req, file, cb) => {
-  // Accept only Excel files
+  // Accept Excel files and CSV files
   if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-      file.mimetype === 'application/vnd.ms-excel') {
+      file.mimetype === 'application/vnd.ms-excel' ||
+      file.mimetype === 'text/csv' ||
+      file.mimetype === 'application/csv' ||
+      file.originalname.endsWith('.xlsx') ||
+      file.originalname.endsWith('.xls') ||
+      file.originalname.endsWith('.csv')) {
     cb(null, true);
   } else {
-    cb(new Error('Invalid file type. Only Excel files are allowed.'), false);
+    cb(new Error('Invalid file type. Only Excel files (.xlsx, .xls) and CSV files (.csv) are allowed.'), false);
   }
 };
 
@@ -22,7 +27,7 @@ const upload = multer({
   fileFilter: fileFilter,
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB max file size
-    files: 1 // Only one file at a time
+    files: 1000 // Allow multiple files
   }
 });
 
@@ -41,6 +46,7 @@ const handleMulterError = (err, req, res, next) => {
 };
 
 let previousSheetHash = '';
+let isSyncRunning = false; // Add sync lock
 const { excelDateToJSDate } = require('../utils/excelDateParser');
 /**
  * Syncs Google Sheet data to MongoDB and returns the new data.
@@ -48,302 +54,208 @@ const { excelDateToJSDate } = require('../utils/excelDateParser');
  */
 async function uploadExcelToLeadReport(req, res) {
   try {
-    // Check MongoDB connection
+    // Validate file upload
+    const files = req.files || (req.file ? [req.file] : []);
+
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' });
+    }
+
     if (!mongoose.connection.readyState) {
-      return res.status(503).json({ 
-        error: 'Database connection not available. Please try again in a few moments.' 
-      });
+      return res.status(503).json({ error: 'Database connection not available.' });
     }
 
-    // 1. Validate file upload
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    // 2. Validate file type
-    if (!req.file.mimetype.includes('excel') && !req.file.mimetype.includes('spreadsheet')) {
-      return res.status(400).json({ error: 'Invalid file type. Please upload an Excel file.' });
-    }
-
-    // 3. Validate file size (e.g., max 10MB)
-    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-    if (req.file.size > MAX_FILE_SIZE) {
-      return res.status(400).json({ error: 'File size too large. Maximum size is 10MB.' });
-    }
-
-    // 4. Validate buffer
-    if (!req.file.buffer || req.file.buffer.length === 0) {
-      return res.status(400).json({ error: 'Invalid file content.' });
-    }
-
-    let workbook;
-    try {
-      workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
-    } catch (error) {
-      console.error('❌ Excel parsing error:', error);
-      return res.status(400).json({ error: 'Failed to parse Excel file. Please ensure it is a valid Excel file.' });
-    }
-
-    // 5. Validate workbook
-    if (!workbook || !workbook.SheetNames || workbook.SheetNames.length === 0) {
-      return res.status(400).json({ error: 'No sheets found in the Excel file.' });
-    }
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB limit
 
     const acceptedMap = new Map();
     const rejectedMap = new Map();
     const processedLeads = new Set();
-    let processedRows = 0;
-    let skippedRows = 0;
-    let errors = 0;
+    let processedRows = 0, skippedRows = 0, errors = 0;
 
-    // 6. Process each sheet with error handling
-    for (const sheetName of workbook.SheetNames) {
+    for (const file of files) {
+      // Validate file type and size
+      if (!file.mimetype.includes('excel') && !file.mimetype.includes('spreadsheet') && !file.mimetype.includes('csv')) {
+        skippedRows++;
+        continue;
+      }
+      if (file.size > MAX_FILE_SIZE || !file.buffer || file.buffer.length === 0) {
+        skippedRows++;
+        continue;
+      }
+
+      let workbook;
       try {
-        const worksheet = workbook.Sheets[sheetName];
-        if (!worksheet) {
-          console.warn(`⚠️ Sheet ${sheetName} is empty or invalid`);
-          continue;
-        }
-
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
-        if (!jsonData || jsonData.length === 0) {
-          console.warn(`⚠️ No data found in sheet ${sheetName}`);
-          continue;
-        }
-
-        for (const row of jsonData) {
-          try {
-            const leadId = row[Object.keys(row)[0]];
-            const updatedTimestampRaw = row[Object.keys(row)[1]];
-            const rawITL = row[Object.keys(row)[6]];
-            const status = (row['Status'] || row['status'] || "").trim().toLowerCase();
-
-            if (!leadId || !rawITL) {
-              skippedRows++;
-              continue;
-            }
-
-            // Create unique key for lead to check duplicates
-            const leadKey = `${leadId}_${rawITL}_${status}`;
-            if (processedLeads.has(leadKey)) {
-              skippedRows++;
-              continue;
-            }
-            processedLeads.add(leadKey);
-
-            // Extract ITL code
-            const match = rawITL.match(/ITL\s*-*\s*(\d{4})/i);
-            if (!match) {
-              skippedRows++;
-              continue;
-            }
-
-            const itlCode = match[1];
-            let dateOnly = null;
-
-            // Parse date
-            if (updatedTimestampRaw) {
-              let parsedDate = null;
-              if (typeof updatedTimestampRaw === 'number') {
-                parsedDate = excelDateToJSDate(updatedTimestampRaw);
-              } else if (typeof updatedTimestampRaw === 'string') {
-                parsedDate = new Date(updatedTimestampRaw);
-              }
-
-              if (parsedDate && !isNaN(parsedDate)) {
-                dateOnly = parsedDate.toISOString().split('T')[0];
-              }
-            }
-
-            if (!dateOnly) {
-              skippedRows++;
-              continue;
-            }
-
-            processedRows++;
-
-            // Create unique key for ITL and date
-            const key = `${itlCode}_${dateOnly}`;
-            
-            // Initialize entries for both accepted and rejected maps
-            if (!acceptedMap.has(key)) {
-              acceptedMap.set(key, {
-                itlCode,
-                date: dateOnly,
-                acceptedCount: 0,
-                rejectedCount: 0,
-                acceptedLeadIds: new Set(),
-                rejectedLeadIds: new Set(),
-                lastUpdated: new Date()
-              });
-            }
-            
-            if (!rejectedMap.has(key)) {
-              rejectedMap.set(key, {
-                itlCode,
-                date: dateOnly,
-                acceptedCount: 0,
-                rejectedCount: 0,
-                acceptedLeadIds: new Set(),
-                rejectedLeadIds: new Set(),
-                lastUpdated: new Date()
-              });
-            }
-
-            // Update the appropriate map based on status
-            // If status is 'rejected', add to rejected map, otherwise add to accepted map
-            if (status === 'rejected') {
-              const entry = rejectedMap.get(key);
-              entry.rejectedCount++;
-              entry.rejectedLeadIds.add(leadId);
-              entry.lastUpdated = new Date();
-              console.log(`✅ Added rejected lead ID: ${leadId} for ITL: ${itlCode} on date: ${dateOnly}`);
-            } else {
-              // All non-rejected leads are considered accepted
-              const entry = acceptedMap.get(key);
-              entry.acceptedCount++;
-              entry.acceptedLeadIds.add(leadId);
-            entry.lastUpdated = new Date();
-              console.log(`✅ Added accepted lead ID: ${leadId} for ITL: ${itlCode} on date: ${dateOnly}`);
-            }
-
-          } catch (rowError) {
-            console.error('❌ Error processing row:', rowError);
-            errors++;
-          }
-        }
-      } catch (sheetError) {
-        console.error(`❌ Error processing sheet ${sheetName}:`, sheetError);
+        workbook = XLSX.read(file.buffer, { type: 'buffer' });
+      } catch (err) {
+        console.error('Excel parsing error:', err);
         errors++;
+        continue;
       }
-    }
 
-    // 7. Validate processed data
-    if (processedRows === 0) {
-      return res.status(400).json({ error: 'No valid data found in the Excel file.' });
-    }
+      if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+        skippedRows++;
+        continue;
+      }
 
-    // 8. Save to database
-    try {
-      // Log the state of maps before processing
-      console.log('Accepted Map before processing:', 
-        Array.from(acceptedMap.entries()).map(([key, value]) => ({
-          key,
-          count: value.acceptedCount,
-          leadIds: Array.from(value.acceptedLeadIds)
-        }))
-      );
+      for (const sheetName of workbook.SheetNames) {
+        try {
+          const worksheet = workbook.Sheets[sheetName];
+          const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+          if (!rows || rows.length === 0) continue;
 
-      // Prepare bulk operations
-      const bulkOps = [];
-      
-      // Process accepted leads
-      for (const [key, entry] of acceptedMap) {
-        if (entry.acceptedCount > 0) {
-          console.log(`Processing accepted entry for ${key}:`, {
-            count: entry.acceptedCount,
-            leadIds: Array.from(entry.acceptedLeadIds)
-          });
+          for (const row of rows) {
+            try {
+              // More robust field mapping with fallbacks
+              const rowKeys = Object.keys(row);
+              const leadId = row['Lead ID'] || row['LeadID'] || row['ID'] || row[rowKeys[0]];
+              const updatedTimestampRaw = row['Updated Timestamp'] || row['Timestamp'] || row['Date'] || row[rowKeys[1]];
+              const rawITL = row['ITL'] || row['ITL Code'] || row['Campaign ITL'] || row[rowKeys[6]];
+              const status = (row['Status'] || row['status'] || '').trim().toLowerCase();
 
-        bulkOps.push({
-          updateOne: {
-              filter: { itlCode: entry.itlCode, date: entry.date },
-            update: {
-              $set: {
-                  itlCode: entry.itlCode,
-                  date: entry.date,
-                  acceptedCount: entry.acceptedCount,
-                  acceptedLeadIds: Array.from(entry.acceptedLeadIds),
-                  lastUpdated: entry.lastUpdated
+              if (!leadId || !rawITL) {
+                skippedRows++;
+                continue;
               }
-            },
-            upsert: true
-          }
-        });
-      }
-      }
 
-      // Process rejected leads
-      for (const [key, entry] of rejectedMap) {
-        if (entry.rejectedCount > 0) {
-          console.log(`Processing rejected entry for ${key}:`, {
-            count: entry.rejectedCount,
-            leadIds: Array.from(entry.rejectedLeadIds)
-          });
-
-        bulkOps.push({
-          updateOne: {
-              filter: { itlCode: entry.itlCode, date: entry.date },
-            update: {
-              $set: {
-                  itlCode: entry.itlCode,
-                  date: entry.date,
-                  rejectedCount: entry.rejectedCount,
-                  rejectedLeadIds: Array.from(entry.rejectedLeadIds),
-                  lastUpdated: entry.lastUpdated
+              const leadKey = `${leadId}_${rawITL}_${status}`;
+              if (processedLeads.has(leadKey)) {
+                skippedRows++;
+                continue;
               }
-            },
-            upsert: true
+              processedLeads.add(leadKey);
+
+              const match = rawITL.match(/ITL\s*-*\s*(\d{4})/i);
+              if (!match) {
+                skippedRows++;
+                continue;
+              }
+
+              const itlCode = match[1];
+              let dateOnly = null;
+
+              if (updatedTimestampRaw) {
+                let parsedDate = null;
+                if (typeof updatedTimestampRaw === 'number') {
+                  parsedDate = excelDateToJSDate(updatedTimestampRaw);
+                } else if (typeof updatedTimestampRaw === 'string') {
+                  const tempDate = new Date(updatedTimestampRaw);
+                  if (!isNaN(tempDate.getTime())) parsedDate = tempDate;
+                }
+                if (parsedDate) dateOnly = parsedDate.toISOString().split('T')[0];
+              }
+
+              if (!dateOnly) {
+                skippedRows++;
+                continue;
+              }
+
+              processedRows++;
+              const key = `${itlCode}_${dateOnly}`;
+
+              if (!acceptedMap.has(key)) {
+                acceptedMap.set(key, {
+                  itlCode, date: dateOnly,
+                  acceptedCount: 0, rejectedCount: 0,
+                  acceptedLeadIds: new Set(), rejectedLeadIds: new Set(),
+                  lastUpdated: new Date()
+                });
+              }
+              if (!rejectedMap.has(key)) {
+                rejectedMap.set(key, {
+                  itlCode, date: dateOnly,
+                  acceptedCount: 0, rejectedCount: 0,
+                  acceptedLeadIds: new Set(), rejectedLeadIds: new Set(),
+                  lastUpdated: new Date()
+                });
+              }
+
+              if (status === 'rejected') {
+                rejectedMap.get(key).rejectedCount++;
+                rejectedMap.get(key).rejectedLeadIds.add(leadId);
+                rejectedMap.get(key).lastUpdated = new Date();
+              } else {
+                acceptedMap.get(key).acceptedCount++;
+                acceptedMap.get(key).acceptedLeadIds.add(leadId);
+                acceptedMap.get(key).lastUpdated = new Date();
+              }
+            } catch (rowErr) {
+              console.error('Row processing error:', rowErr);
+              errors++;
+            }
           }
-        });
-      }
-      }
-
-      // Log final stats before sending response
-      console.log('Final Stats:', {
-        totalRows: processedRows + skippedRows + errors,
-        processedRows,
-        skippedRows,
-        errors,
-        acceptedMapSize: acceptedMap.size,
-        rejectedMapSize: rejectedMap.size,
-        acceptedEntries: Array.from(acceptedMap.entries()).map(([key, value]) => ({
-          key,
-          count: value.acceptedCount,
-          leadIds: Array.from(value.acceptedLeadIds)
-        })),
-        rejectedEntries: Array.from(rejectedMap.entries()).map(([key, value]) => ({
-          key,
-          count: value.rejectedCount,
-          leadIds: Array.from(value.rejectedLeadIds)
-        }))
-      });
-
-      // Execute bulk operations
-      if (bulkOps.length > 0) {
-        const result = await mongoose.connection.db.collection('lead_reports').bulkWrite(bulkOps);
-        console.log('Bulk write result:', result);
-      }
-
-      return res.json({
-        success: true,
-        message: 'File processed successfully',
-        stats: {
-          totalRows: processedRows + skippedRows + errors,
-          processedRows,
-          skippedRows,
-          errors,
-          accepted: {
-            total: Array.from(acceptedMap.values()).reduce((sum, entry) => sum + entry.acceptedCount, 0),
-            modified: 0,
-            inserted: Array.from(acceptedMap.values()).reduce((sum, entry) => sum + entry.acceptedLeadIds.size, 0)
-          },
-          rejected: {
-            total: Array.from(rejectedMap.values()).reduce((sum, entry) => sum + entry.rejectedCount, 0),
-            modified: 0,
-            inserted: Array.from(rejectedMap.values()).reduce((sum, entry) => sum + entry.rejectedLeadIds.size, 0)
-          }
+        } catch (sheetErr) {
+          console.error('Sheet processing error:', sheetErr);
+          errors++;
         }
-      });
-    } catch (dbError) {
-      console.error('❌ Database error:', dbError);
-      return res.status(500).json({ error: 'Failed to save data to database.' });
+      }
     }
-  } catch (error) {
-    console.error('❌ Error in uploadExcelToLeadReport:', error);
+
+    if (processedRows === 0) {
+      return res.status(400).json({ error: 'No valid data found in uploaded file.' });
+    }
+
+    // Prepare bulk operations for MongoDB
+    const bulkOps = [];
+
+    for (const [key, entry] of acceptedMap) {
+      if (entry.acceptedCount > 0) {
+        bulkOps.push({
+          updateOne: {
+            filter: { itlCode: entry.itlCode, date: entry.date },
+            update: {
+              $set: {
+                itlCode: entry.itlCode,
+                date: entry.date,
+                acceptedCount: entry.acceptedCount,
+                acceptedLeadIds: Array.from(entry.acceptedLeadIds),
+                lastUpdated: entry.lastUpdated
+              }
+            },
+            upsert: true
+          }
+        });
+      }
+    }
+
+    for (const [key, entry] of rejectedMap) {
+      if (entry.rejectedCount > 0) {
+        bulkOps.push({
+          updateOne: {
+            filter: { itlCode: entry.itlCode, date: entry.date },
+            update: {
+              $set: {
+                itlCode: entry.itlCode,
+                date: entry.date,
+                rejectedCount: entry.rejectedCount,
+                rejectedLeadIds: Array.from(entry.rejectedLeadIds),
+                lastUpdated: entry.lastUpdated
+              }
+            },
+            upsert: true
+          }
+        });
+      }
+    }
+
+    if (bulkOps.length > 0) {
+      await mongoose.connection.db.collection('lead_reports').bulkWrite(bulkOps);
+    }
+
+    return res.json({
+      success: true,
+      message: 'File processed successfully',
+      stats: {
+        totalRows: processedRows + skippedRows + errors,
+        processedRows, skippedRows, errors
+      }
+    });
+
+  } catch (err) {
+    console.error('Upload error:', err);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }
+
 
 module.exports = {
   upload,
@@ -360,6 +272,17 @@ module.exports = {
 };
 
 async function syncSheetToDatabase(io) {
+  // Prevent multiple syncs from running simultaneously
+  if (isSyncRunning) {
+    console.log('🔄 Sync already in progress, skipping...');
+    return {
+      success: false,
+      message: 'Sync already in progress'
+    };
+  }
+
+  isSyncRunning = true;
+  
   try {
     // Check MongoDB connection
     if (!mongoose.connection.readyState) {
@@ -380,9 +303,18 @@ async function syncSheetToDatabase(io) {
     for (const row of sheetData) {
       if (row.ITL && row['Start Date']) {
         const itlCode = row.ITL;
-        const date = new Date(row['Start Date']);
-        const dateStr = date.toISOString().split('T')[0];
-        sheetKeys.add(`${itlCode}_${dateStr}`);
+        let dateStr = '';
+const date = new Date(row['Start Date']);
+if (date instanceof Date && !isNaN(date.getTime())) {
+  dateStr = date.toISOString().split('T')[0];
+} else {
+  console.warn(`⚠️ Invalid date found for ITL ${itlCode}: ${row['Start Date']}`);
+  skippedRows++;
+  continue;  // skip this row if date invalid
+}
+sheetKeys.add(`${itlCode}_${dateStr}`);
+
+       
       }
     }
 
@@ -487,13 +419,18 @@ async function syncSheetToDatabase(io) {
       stats: {
         processed: processedRows,
         skipped: skippedRows,
-        errors: errors,
-        total: sheetData.length
+        errors: errors
       }
     };
   } catch (error) {
-    console.error('Error in syncSheetToDatabase:', error);
-    throw error;
+    console.error('❌ Sync error:', error);
+    return {
+      success: false,
+      message: 'Sync failed',
+      error: error.message
+    };
+  } finally {
+    isSyncRunning = false; // Release sync lock
   }
 }
 

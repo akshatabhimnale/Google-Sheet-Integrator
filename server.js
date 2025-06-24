@@ -10,6 +10,7 @@ const sheetRoutes = require("./routes/sheet.routes");
 const { syncSheetToDatabase } = require("./controllers/sheet.controller");
 const authRoutes = require("./routes/auth.routes");
 const leadRoutes = require("./routes/lead.routes");
+const campaignUpdatesRoutes = require("./routes/campaignUpdates.routes");
 
 const app = express();
 const server = http.createServer(app);
@@ -24,8 +25,20 @@ const io = socketIo(server, {
 // Middleware
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: [
+      'http://localhost:3000',
+      'https://localhost:3000',
+      'http://localhost:3001',
+      'http://localhost:3001/login',
+      'https://localhost:3001',
+      'http://127.0.0.1:3000',
+      'https://127.0.0.1:3000',
+      'http://10.27.76.197:3001',
+      'https://crm-frontend-yourdomain.com',
+    ],
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
   })
 );
 app.use(express.json({ limit: "50mb" }));
@@ -44,6 +57,10 @@ app.use((err, req, res, next) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/sheets", sheetRoutes);
 app.use("/api/leads", leadRoutes);
+app.use("/api/campaigns", campaignUpdatesRoutes);
+
+// Make Socket.IO instance available to routes
+app.set('io', io);
 
 // Socket.IO connection handling
 io.on("connection", (socket) => {
@@ -66,9 +83,7 @@ const mongooseOptions = {
 
 // MongoDB connection with retry logic
 const connectWithRetry = async () => {
-  const MONGODB_URI =
-    process.env.MONGODB_URI ||
-    "mongodb+srv://brianrolf:1lAP1iFaIU8AcHK4@interlink.pdcubpd.mongodb.net/?retryWrites=true&w=majority&appName=Interlink";
+  const MONGODB_URI = process.env.MONGO_URI || process.env.MONGODB_URI || "mongodb+srv://brianrolf:1lAP1iFaIU8AcHK4@interlink.pdcubpd.mongodb.net/?retryWrites=true&w=majority&appName=Interlink";
 
   try {
     await mongoose.connect(MONGODB_URI, mongooseOptions);

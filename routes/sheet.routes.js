@@ -7,8 +7,6 @@ const {
   uploadExcelToMergedLeadReport,
   testConnection,
   getStatusSummary,
-  getCampaignUpdates,
-  addCampaignUpdate,
   getAllSheetData,
   getCampaignDeliveredCount
 } = require('../controllers/sheet.controller');
@@ -27,19 +25,15 @@ router.get('/campaign-delivered-count', getCampaignDeliveredCount);
 
 // Upload routes with proper middleware
 router.post('/upload-lead-report', 
-  upload.single('file'),
+  upload.array('files', 1000),
   handleMulterError,
   uploadExcelToLeadReport
 );
 
 router.post('/upload-merged-lead-report', 
-  upload.single('file'),
+  upload.array('files', 1000),
   handleMulterError,
   uploadExcelToMergedLeadReport
 );
-
-// Campaign updates routes
-router.get('/campaigns/:campaignId/updates', getCampaignUpdates);
-router.post('/campaigns/:campaignId/updates', addCampaignUpdate);
 
 module.exports = router;
